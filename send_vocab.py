@@ -63,10 +63,11 @@ def get_eligible_words():
         if start_cursor:
             kwargs["start_cursor"] = start_cursor
 
-        response = notion.databases.query(**kwargs)
-        results.extend(response["results"])
-        has_more = response.get("has_more", False)
-        start_cursor = response.get("next_cursor")
+        response = notion.data_sources.query(NOTION_DATABASE_ID, **kwargs)
+        data = dict(response)
+        results.extend(data.get("results", []))
+        has_more = data.get("has_more", False)
+        start_cursor = data.get("next_cursor")
 
     eligible = []
     for page in results:
