@@ -32,10 +32,12 @@ STATUS_PROGRESSION = {
 notion = Client(auth=NOTION_TOKEN)
 
 def bump_status(page_id):
-    """Move a word one step up the status ladder."""
+    """Move a word one step up the status ladder. Returns (word, old_status, new_status)."""
     page = notion.pages.retrieve(page_id)
-    current = page["properties"]["Status"]["select"]["name"] if page["properties"]["Status"]["select"] else "new"
+    props = page["properties"]
+    current = props["Status"]["select"]["name"] if props["Status"]["select"] else "new"
     new_status = STATUS_PROGRESSION.get(current, "known")
+    word = props["Word"]["title"][0]["text"]["content"] if props["Word"]["title"] else "?"
 
     notion.pages.update(
         page_id=page_id,
@@ -45,7 +47,7 @@ def bump_status(page_id):
             }
         }
     )
-    return current, new_status
+    return word, current, new_status
 
 
 # ── Telegram ───────────────────────────────────────────────────────────────────
@@ -94,32 +96,41 @@ def save_offset(offset):
 def handle_message(text, session):
     text = text.strip()
 
-    # Only accept digits 1-5
-    if not text.isdigit():
+    # Parse comma-separated positions (e.g. "1", "1,3", "2, 4, 5")
+    raw_parts = [p.strip() for p in text.split(",")]
+
+    # Validate: all parts must be digits
+    if not all(p.isdigit() for p in raw_parts if p):
         return
 
-    position = text
-    if position not in session:
-        send_reply(f"⚠️ Position {position} not found in the last session. Send the next batch to get new words.")
-        return
+    positions = list(dict.fromkeys(p for p in raw_parts if p))  # deduplicate, preserve order
+    reply_lines = []
 
-    page_id = session[position]
+    for position in positions:
+        if position not in session:
+            reply_lines.append(f"⚠️ Position {position} not found in the last session.")
+            continue
 
-    try:
-        old_status, new_status = bump_status(page_id)
+        page_id = session[position]
 
-        if old_status == new_status == "known":
-            send_reply(f"✅ Word {position} is already marked as <b>known</b>.")
-        else:
-            status_emoji = {"seen": "👁", "familiar": "🔁", "known": "✅"}.get(new_status, "")
-            send_reply(
-                f"{status_emoji} Word <b>{position}</b>: <i>{old_status}</i> → <b>{new_status}</b>"
-            )
-            print(f"[{datetime.now()}] Word {position} (ID: {page_id}): {old_status} → {new_status}")
+        try:
+            word, old_status, new_status = bump_status(page_id)
 
-    except Exception as e:
-        print(f"Error updating word {position}: {e}")
-        send_reply(f"❌ Error updating word {position}. Check logs.")
+            if old_status == new_status == "known":
+                reply_lines.append(f"✅ <b>{position}. {word}</b> is already <b>known</b>.")
+            else:
+                status_emoji = {"seen": "👁", "familiar": "🔁", "known": "✅"}.get(new_status, "")
+                reply_lines.append(
+                    f"{status_emoji} <b>{position}. {word}</b>: <i>{old_status}</i> → <b>{new_status}</b>"
+                )
+                print(f"[{datetime.now()}] Word {position} '{word}' (ID: {page_id}): {old_status} → {new_status}")
+
+        except Exception as e:
+            print(f"Error updating word {position}: {e}")
+            reply_lines.append(f"❌ Error updating word {position}. Check logs.")
+
+    if reply_lines:
+        send_reply("\n".join(reply_lines))
 
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
