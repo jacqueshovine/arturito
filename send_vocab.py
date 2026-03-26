@@ -9,6 +9,7 @@ import os
 import json
 import random
 import requests
+import pytz
 from datetime import date, datetime, timedelta
 from notion_client import Client
 
@@ -17,6 +18,7 @@ NOTION_TOKEN      = os.environ["NOTION_TOKEN"]
 NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 TELEGRAM_TOKEN    = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID  = os.environ["TELEGRAM_CHAT_ID"]
+TIMEZONE          = os.environ.get("TZ", "Australia/Sydney")
 SESSION_FILE      = "/home/ubuntu/arturito/session.json"
 WORDS_PER_MESSAGE = 5
 
@@ -40,13 +42,15 @@ notion = Client(auth=NOTION_TOKEN)
 
 def get_eligible_words():
     """Query Notion for words that are not 'known' and past their cooldown."""
-    today = date.today()
+    tz = pytz.timezone(TIMEZONE)
+    today = datetime.now(tz).date()
     results = []
     has_more = True
     start_cursor = None
 
     while has_more:
         kwargs = {
+            "database_id": NOTION_DATABASE_ID,
             "filter": {
                 "and": [
                     {
@@ -59,11 +63,10 @@ def get_eligible_words():
         if start_cursor:
             kwargs["start_cursor"] = start_cursor
 
-        response = notion.data_sources.query(NOTION_DATABASE_ID, **kwargs)
-        data = dict(response)
-        results.extend(data.get("results", []))
-        has_more = data.get("has_more", False)
-        start_cursor = data.get("next_cursor")
+        response = notion.databases.query(**kwargs)
+        results.extend(response["results"])
+        has_more = response.get("has_more", False)
+        start_cursor = response.get("next_cursor")
 
     eligible = []
     for page in results:
@@ -119,6 +122,9 @@ def pick_words(eligible):
 
 def update_word_in_notion(page_id):
     """Update Last Sent date and increment Skip Count for a sent word."""
+    tz = pytz.timezone(TIMEZONE)
+    today = datetime.now(tz).date()
+
     page = notion.pages.retrieve(page_id)
     props = page["properties"]
     skip_count = int(props["Skip Count"]["number"] or 0)
@@ -127,7 +133,7 @@ def update_word_in_notion(page_id):
         page_id=page_id,
         properties={
             "Last Sent": {
-                "date": {"start": date.today().isoformat()}
+                "date": {"start": today.isoformat()}
             },
             "Skip Count": {
                 "number": skip_count + 1
@@ -158,7 +164,8 @@ def save_session(words):
 
 # ── Format message ─────────────────────────────────────────────────────────────
 def format_message(words):
-    now = datetime.now()
+    tz = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz)
     period = "🌅 Buenos días" if now.hour < 12 else "🌙 Buenas tardes"
     lines = [f"<b>{period} — vocabulario del día</b>\n"]
 
@@ -174,7 +181,9 @@ def format_message(words):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
-    print(f"[{datetime.now()}] Running send_vocab.py...")
+    tz = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz)
+    print(f"[{now}] Running send_vocab.py (timezone: {TIMEZONE})...")
 
     eligible = get_eligible_words()
     if not eligible:
