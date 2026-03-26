@@ -121,22 +121,14 @@ def pick_words(eligible):
 
 
 def update_word_in_notion(page_id):
-    """Update Last Sent date and increment Skip Count for a sent word."""
+    """Update Last Sent date for a sent word."""
     tz = pytz.timezone(TIMEZONE)
     today = datetime.now(tz).date()
-
-    page = notion.pages.retrieve(page_id)
-    props = page["properties"]
-    skip_count = int(props["Skip Count"]["number"] or 0)
-
     notion.pages.update(
         page_id=page_id,
         properties={
             "Last Sent": {
                 "date": {"start": today.isoformat()}
-            },
-            "Skip Count": {
-                "number": skip_count + 1
             }
         }
     )
