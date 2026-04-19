@@ -4,6 +4,8 @@ A personal Telegram bot that delivers daily Spanish vocabulary using spaced repe
 
 Built with Python, cron, systemd, Telegram Bot API, and Notion.
 
+<img src="assets/telegram-screenshot.jpeg" width="400" />
+
 ## Stack
 
 | Layer | Technology |
@@ -86,7 +88,7 @@ Runs forever. Long-polls the Telegram API for replies. When a number (or comma-s
 
 ## Status Progression
 
-Words move through four stages. The script never sends `known` words.
+Words move through four stages. The script never sends `known` words, they can be removed from Notion manually.
 
 | Status | Cooldown before resend | Weight in pick |
 |---|---|---|
