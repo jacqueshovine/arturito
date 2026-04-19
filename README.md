@@ -4,7 +4,15 @@ A personal Telegram bot that delivers daily Spanish vocabulary using spaced repe
 
 Built with Python, cron, systemd, Telegram Bot API, and Notion.
 
+*Telegram bot*
+
 <img src="assets/telegram-screenshot.jpeg" width="400" />
+
+---
+
+*Notion DB*
+
+<img src="assets/notion_db-screenshot.png" width="700" />
 
 ## Stack
 
