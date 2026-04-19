@@ -1,1 +1,4 @@
 .history/
+cron_test.log
+offset.txt
+session.json
