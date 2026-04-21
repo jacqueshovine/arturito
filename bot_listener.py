@@ -6,7 +6,6 @@ Runs as a persistent systemd service.
 """
 
 import os
-import json
 import time
 import requests
 from datetime import datetime
@@ -16,27 +15,24 @@ from notion_client import Client
 NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-SESSION_FILE    = "/home/ubuntu/arturito/session.json"
 OFFSET_FILE     = "/home/ubuntu/arturito/offset.txt"
 POLL_INTERVAL   = 2  # seconds
 
-# Status progression
-STATUS_PROGRESSION = {
-    "new":      "seen",
-    "seen":     "familiar",
-    "familiar": "known",
-    "known":    "known",  # already at the top
-}
+STATUS_LADDER = ["new", "seen", "familiar", "known"]
 
 # ── Notion ─────────────────────────────────────────────────────────────────────
 notion = Client(auth=NOTION_TOKEN)
 
-def bump_status(page_id):
-    """Move a word one step up the status ladder. Returns (word, old_status, new_status)."""
+def change_status(page_id, direction):
+    """Move a word one step up or down the status ladder. Returns (word, old_status, new_status)."""
     page = notion.pages.retrieve(page_id)
     props = page["properties"]
     current = props["Status"]["select"]["name"] if props["Status"]["select"] else "new"
-    new_status = STATUS_PROGRESSION.get(current, "known")
+    idx = STATUS_LADDER.index(current) if current in STATUS_LADDER else 0
+    if direction == "up":
+        new_status = STATUS_LADDER[min(idx + 1, len(STATUS_LADDER) - 1)]
+    else:
+        new_status = STATUS_LADDER[max(idx - 1, 0)]
     word = props["Word"]["title"][0]["text"]["content"] if props["Word"]["title"] else "?"
 
     notion.pages.update(
@@ -53,7 +49,7 @@ def bump_status(page_id):
 # ── Telegram ───────────────────────────────────────────────────────────────────
 def get_updates(offset=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-    params = {"timeout": 30, "allowed_updates": ["message"]}
+    params = {"timeout": 30, "allowed_updates": ["callback_query"]}
     if offset:
         params["offset"] = offset
     response = requests.get(url, params=params, timeout=40)
@@ -61,22 +57,11 @@ def get_updates(offset=None):
     return response.json().get("result", [])
 
 
-def send_reply(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML"
-    })
+def answer_callback_query(callback_query_id, text):
+    """Acknowledge a button tap — shows a brief popup to the user."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery"
+    requests.post(url, json={"callback_query_id": callback_query_id, "text": text})
 
-
-# ── Session map ────────────────────────────────────────────────────────────────
-def load_session():
-    try:
-        with open(SESSION_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
 
 
 def load_offset():
@@ -92,45 +77,38 @@ def save_offset(offset):
         f.write(str(offset))
 
 
-# ── Message handler ────────────────────────────────────────────────────────────
-def handle_message(text, session):
-    text = text.strip()
+# ── Callback handler ───────────────────────────────────────────────────────────
+def handle_callback_query(callback_query):
+    data              = callback_query.get("data", "")
+    callback_query_id = callback_query["id"]
+    message           = callback_query.get("message", {})
+    chat_id           = str(message.get("chat", {}).get("id", ""))
 
-    # Parse comma-separated positions (e.g. "1", "1,3", "2, 4, 5")
-    raw_parts = [p.strip() for p in text.split(",")]
-
-    # Validate: all parts must be digits
-    if not all(p.isdigit() for p in raw_parts if p):
+    # Only respond to messages from your own chat
+    if chat_id != TELEGRAM_CHAT_ID:
         return
 
-    positions = list(dict.fromkeys(p for p in raw_parts if p))  # deduplicate, preserve order
-    reply_lines = []
+    if ":" not in data:
+        return
 
-    for position in positions:
-        if position not in session:
-            reply_lines.append(f"⚠️ Position {position} not found in the last session.")
-            continue
+    direction, page_id = data.split(":", 1)  # e.g. "up:abc-123" or "down:abc-123"
 
-        page_id = session[position]
+    try:
+        word, old_status, new_status = change_status(page_id, direction)
 
-        try:
-            word, old_status, new_status = bump_status(page_id)
+        if old_status == new_status:
+            edge = "top ✅" if direction == "up" else "bottom"
+            popup_text = f"{word} is already at the {edge}"
+        else:
+            status_emoji = {"seen": "👁", "familiar": "🔁", "known": "✅", "new": "🆕"}.get(new_status, "")
+            popup_text = f"{status_emoji} {word}: {old_status} → {new_status}"
+            print(f"[{datetime.now()}] '{word}' (ID: {page_id}): {old_status} → {new_status}")
 
-            if old_status == new_status == "known":
-                reply_lines.append(f"✅ <b>{position}. {word}</b> is already <b>known</b>.")
-            else:
-                status_emoji = {"seen": "👁", "familiar": "🔁", "known": "✅"}.get(new_status, "")
-                reply_lines.append(
-                    f"{status_emoji} <b>{position}. {word}</b>: <i>{old_status}</i> → <b>{new_status}</b>"
-                )
-                print(f"[{datetime.now()}] Word {position} '{word}' (ID: {page_id}): {old_status} → {new_status}")
+        answer_callback_query(callback_query_id, popup_text)
 
-        except Exception as e:
-            print(f"Error updating word {position}: {e}")
-            reply_lines.append(f"❌ Error updating word {position}. Check logs.")
-
-    if reply_lines:
-        send_reply("\n".join(reply_lines))
+    except Exception as e:
+        print(f"[{datetime.now()}] Error updating word {page_id}: {e}")
+        answer_callback_query(callback_query_id, "❌ Error updating word. Check logs.")
 
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
@@ -141,22 +119,13 @@ def main():
     while True:
         try:
             updates = get_updates(offset)
-            session = load_session()
 
             for update in updates:
                 offset = update["update_id"] + 1
                 save_offset(offset)
 
-                message = update.get("message", {})
-                chat_id = str(message.get("chat", {}).get("id", ""))
-                text = message.get("text", "")
-
-                # Only respond to messages from your own chat
-                if chat_id != TELEGRAM_CHAT_ID:
-                    continue
-
-                if text:
-                    handle_message(text, session)
+                if "callback_query" in update:
+                    handle_callback_query(update["callback_query"])
 
         except requests.exceptions.RequestException as e:
             print(f"[{datetime.now()}] Network error: {e}. Retrying in 10s...")

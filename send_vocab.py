@@ -6,11 +6,10 @@ Triggered by cron at 08:00 and 20:00.
 """
 
 import os           # used to read environment variables
-import json
 import random
 import requests
 import pytz
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from notion_client import Client
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -19,8 +18,7 @@ NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 TELEGRAM_TOKEN    = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID  = os.environ["TELEGRAM_CHAT_ID"]
 TIMEZONE          = os.environ.get("TZ", "Australia/Sydney")
-SESSION_FILE      = "/home/ubuntu/arturito/session.json"  # maps position numbers → Notion page IDs
-WORDS_PER_MESSAGE = 5 
+WORDS_PER_MESSAGE = 5
 
 # How many days must pass after sending a word before it can be sent again
 COOLDOWN_DAYS = {
@@ -138,24 +136,31 @@ def update_word_in_notion(page_id):
     )
 
 
-# ── Telegram helper ────────────────────────────────────────────────────────────
-def send_telegram_message(text):
+# ── Telegram helpers ───────────────────────────────────────────────────────────
+def build_keyboard(words):
+    # "up:page_id" / "down:page_id" — max 41 chars, within Telegram's 64-byte limit
+    return {
+        "inline_keyboard": [
+            [
+                {"text": f"↑ {w['word']}", "callback_data": f"up:{w['id']}"},
+                {"text": f"↓ {w['word']}", "callback_data": f"down:{w['id']}"},
+            ]
+            for w in words
+        ]
+    }
+
+
+def send_telegram_message(text, reply_markup=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": "HTML"
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     response = requests.post(url, json=payload)
     response.raise_for_status()
-
-
-# ── Session map ────────────────────────────────────────────────────────────────
-def save_session(words):
-    """Save position → Notion page ID mapping for the listener."""
-    session = {str(i + 1): w["id"] for i, w in enumerate(words)}
-    with open(SESSION_FILE, "w") as f:
-        json.dump(session, f)
 
 
 # ── Format message ─────────────────────────────────────────────────────────────
@@ -171,7 +176,6 @@ def format_message(words):
             f"<i>{w['example']}</i>\n"
         )
 
-    lines.append("Responde con un número (1-5) para marcar esa palabra como aprendida.")
     return "\n".join(lines)
 
 
@@ -189,9 +193,9 @@ def main():
 
     words = pick_words(eligible)       # weighted-randomly select up to 5 words
     message = format_message(words)    # build the HTML message string
+    keyboard = build_keyboard(words)   # one tap button per word, callback_data carries the page ID
 
-    send_telegram_message(message)     # send the message to Telegram
-    save_session(words)                # write session.json so the listener can map replies to words
+    send_telegram_message(message, reply_markup=keyboard)
 
     for w in words:
         update_word_in_notion(w["id"]) # stamp today's date into its Last Sent field in Notion
